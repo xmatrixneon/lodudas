@@ -61,17 +61,8 @@ function buildSmartOtpRegexList(formats) {
 
       pattern = pattern
         .replace(/\\s+/g, "\\s*")
-        .replace(/\\:/g, "[:：]?");
-
-      // ✅ Smarter dot replacement: only replace dots that are truly sentence endings
-      // Don't replace dots in URLs, abbreviations, or other contexts
-      pattern = pattern
-        // Replace dots at end of string (like "-----ORGEN" suffix)
-        .replace(/\\\.$/g, ".*")
-        // Replace dots followed by space + capital letter (sentence endings)
-        .replace(/\\\.\s+(?=[A-Z])|\\\.\s*$|\\\.\s*-----/g, "\\.\\s*")
-        // Keep all other dots as literal (for URLs, abbreviations, etc.)
-        .replace(/\\\./g, "\\.");
+        .replace(/\\:/g, "[:：]?")
+        .replace(/\\\./g, ".*");
 
       return new RegExp(pattern, "i");
     })
@@ -100,8 +91,8 @@ mongoose
 // Prevent overlapping runs
 let running = false;
 
-// Cron every 2 sec
-cron.schedule("*/2 * * * * *", async () => {
+// Cron every 5 sec
+cron.schedule("*/5 * * * * *", async () => {
   if (running) {
     console.log("⏭ Previous run still in progress — skipping this tick");
     return;
