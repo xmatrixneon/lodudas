@@ -3,16 +3,18 @@
 import { useState } from 'react';
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Loader2, MessageSquare, Code, Copy, CheckCircle, Info } from "lucide-react";
+import { Loader2, MessageSquare, Code, Copy, CheckCircle, Info, AlertTriangle, Wand2 } from "lucide-react";
 import { toast } from "sonner";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 export default function SmsTemplateGenerator() {
   const [smsText, setSmsText] = useState('');
   const [template, setTemplate] = useState('');
   const [extractedOtp, setExtractedOtp] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
 
   const exampleMessages = [
     {
@@ -35,14 +37,15 @@ export default function SmsTemplateGenerator() {
     setExtractedOtp('');
   };
 
-  const handleGenerateTemplate = async () => {
+  const handleGenerateTemplate = async (isRetry = false) => {
     if (!smsText.trim()) {
       toast.error('Please enter SMS text');
       return;
     }
 
     setIsLoading(true);
-    const toastId = toast.loading('Generating template...');
+    setError(null);
+    const toastId = toast.loading(isRetry ? 'AI is fixing...' : 'Generating template...');
 
     try {
       const response = await fetch('/api/sms-template-generator', {
@@ -53,15 +56,19 @@ export default function SmsTemplateGenerator() {
         body: JSON.stringify({ smsText: smsText.trim() }),
       });
 
+      const data = await response.json();
+
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to generate template');
+        setError(data.details || data.error || 'Failed to generate template');
+        toast.error('Generation failed. Click "Ask AI to Fix" to retry.', { id: toastId });
+        return;
       }
 
-      const data = await response.json();
       setTemplate(data.template);
       setExtractedOtp(data.extractedOtp || '');
-      
+      setError(null);
+      setRetryCount(0);
+
       if (data.extractedOtp) {
         toast.success(`✅ Successfully extracted OTP: ${data.extractedOtp}`, { id: toastId });
       } else {
@@ -69,10 +76,16 @@ export default function SmsTemplateGenerator() {
       }
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to generate template. Please try again.';
+      setError(errorMessage);
       toast.error(errorMessage, { id: toastId });
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleRetry = () => {
+    setRetryCount(prev => prev + 1);
+    handleGenerateTemplate(true);
   };
 
   const handleCopyTemplate = () => {
@@ -165,13 +178,49 @@ export default function SmsTemplateGenerator() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            {template ? (
+            {error ? (
+              <>
+                {/* Error Alert */}
+                <Alert variant="destructive">
+                  <AlertTriangle className="h-4 w-4" />
+                  <AlertTitle>Generation Failed</AlertTitle>
+                  <AlertDescription className="mt-2">
+                    <div className="text-sm">{error}</div>
+                  </AlertDescription>
+                </Alert>
+
+                {/* Ask AI to Fix Button */}
+                <Button
+                  onClick={handleRetry}
+                  disabled={isLoading}
+                  className="w-full"
+                >
+                  {isLoading ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      AI is fixing...
+                    </>
+                  ) : (
+                    <>
+                      <Wand2 className="mr-2 h-4 w-4" />
+                      Ask AI to Fix (Retry)
+                    </>
+                  )}
+                </Button>
+              </>
+            ) : template ? (
               <>
                 <div className="p-3 bg-muted rounded-md border">
                   <code className="text-sm whitespace-pre-wrap break-words">
                     {template}
                   </code>
                 </div>
+                {extractedOtp && (
+                  <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
+                    <CheckCircle className="h-4 w-4" />
+                    <span>Extracted OTP: <strong>{extractedOtp}</strong></span>
+                  </div>
+                )}
                 <Button
                   onClick={handleCopyTemplate}
                   variant="outline"

@@ -57,11 +57,77 @@ const openai = new OpenAI({
 
 export async function POST(request) {
   try {
-    const { smsText } = await request.json();
+    const { smsText, template: manualTemplate } = await request.json();
 
     if (!smsText) {
       return NextResponse.json({ error: 'SMS text is required' }, { status: 400 });
     }
+
+    // MANUAL FIX MODE: User provided their own template to validate
+    if (manualTemplate) {
+      console.log(`[Template Gen] MANUAL FIX MODE: Validating user template = "${manualTemplate}"`);
+
+      const validateTemplate = (template, smsText) => {
+        const otpCount = (template.match(/{otp}/gi) || []).length;
+        if (otpCount === 0) {
+          return { valid: false, reason: 'No {otp} placeholder found in template' };
+        }
+        if (otpCount > 1) {
+          return { valid: false, reason: 'Template contains multiple {otp} placeholders. Only one {otp} placeholder is allowed per template.' };
+        }
+
+        const regexList = buildSmartOtpRegexList(template);
+        if (regexList.length === 0) {
+          return { valid: false, reason: 'Failed to build regex from template' };
+        }
+
+        const cleanMessage = normalizeToSingleLine(smsText);
+        let otpFound = null;
+
+        for (const regex of regexList) {
+          try {
+            const match = regex.exec(cleanMessage);
+            otpFound = match?.groups?.otp || (match && match[1]) || null;
+            if (otpFound) {
+              break;
+            }
+          } catch (error) {
+            return { valid: false, reason: `Regex error: ${error.message}` };
+          }
+        }
+
+        if (!otpFound) {
+          return { valid: false, reason: 'Could not extract OTP from SMS using the template' };
+        }
+
+        return { valid: true, otp: otpFound };
+      };
+
+      const validationResult = validateTemplate(manualTemplate, smsText);
+
+      if (validationResult.valid) {
+        const regexList = buildSmartOtpRegexList(manualTemplate);
+        return NextResponse.json({
+          template: manualTemplate,
+          extractedOtp: validationResult.otp,
+          success: true,
+          mode: 'manual_fix',
+          regex: regexList[0]?.toString() || 'N/A'
+        });
+      } else {
+        return NextResponse.json(
+          {
+            error: 'Manual template validation failed',
+            details: validationResult.reason,
+            yourTemplate: manualTemplate,
+            originalSms: smsText
+          },
+          { status: 400 }
+        );
+      }
+    }
+
+    // AI GENERATION MODE: Generate template using AI
 
     // Function to validate template against SMS
     const validateTemplate = (template, smsText) => {
@@ -110,47 +176,91 @@ export async function POST(request) {
       attempts++;
 
       const prompt = `
-You are an SMS template generator. Convert the SMS to a template by replacing ONLY the OTP CODE (the digits/numbers) with {otp}.
+You are an expert SMS template generator. Your template must work for ANY variation of the same SMS format.
 
-IMPORTANT DISTINCTIONS:
-- OTP CODE = numeric code like "791648", "123456" → replace with {otp}
-- The word "OTP" in text = keep as-is, do NOT replace
-- Use {otp} exactly ONCE in the entire template
+=== CRITICAL RULE ===
+Ask yourself: "If this SMS comes again with different values (different OTP, different username, different time), will my template still work?"
+- If YES → Good template
+- If NO → Replace the variable part with a placeholder
 
-Placeholders:
-- {otp} - Replace the OTP CODE (digits only) - USE ONLY ONCE
-- {time} - For durations like "5 min", "100 secs"
-- {any} - For anything else (URLs, random strings, references)
+=== PLACEHOLDER GUIDE ===
 
-EXAMPLES:
+{otp}     → OTP/Verification code ONLY (use exactly once!)
+{random}  → Usernames, IDs, names, alphanumeric strings that vary
+{time}    → Time durations (5 min, 100 secs, 2 hours, 30 minutes)
+{date}    → Dates (2024-01-15, Jan 15, 15/01/2024)
+{any}     → URLs, links, tokens with special chars (/, +, -, #, @)
 
-Example 1 - Simple:
-SMS: "123456 is your OTP for verification."
-Template: "{otp} is your OTP for verification."
+=== WHAT TO REPLACE (VARIES PER MESSAGE) ===
 
-Example 2 - MyJio style:
+✅ MUST Replace:
+- OTP codes: "668523", "1770", "791648", "ABC-123" → {otp}
+- Usernames: "Renu_1982Mishra", "JohnDoe123" → {random}
+- IDs: "ID: ABC123", "Ref: XYZ789" → "ID: {random}", "Ref: {random}"
+- Customer names: "Dear Amit", "Hello Priya" → "Dear {random}"
+- Time: "100 secs", "5 min", "2 hours" → {time}
+- Dates: "2024-01-15", "today" → {date}
+- URLs: "bit.ly/abc", "wa.me/123" → {any}
+- Tokens: "N9BWuqauU1y", "#abc123" → {random} or {any}
+
+❌ DO NOT Replace (static text):
+- Words: "OTP", "password", "code", "verification", "login", "authenticate"
+- Company names: "IRCTC", "Airtel", "Jio", "Vi", "Paytm"
+- App names: "Twitter", "Facebook", "WhatsApp"
+- Static phrases: "DO NOT disclose", "Valid for", "Expires in", "is your"
+
+=== REAL EXAMPLES ===
+
+Example 1 - IRCTC (username varies):
+SMS: "668523 is OTP for Mobile number verification of User Renu_1982Mishra. DO NOT disclose it to anyone -IRCTC"
+Template: "{otp} is OTP for Mobile number verification of User {random}. DO NOT disclose it to anyone -IRCTC"
+Why: Username "Renu_1982Mishra" varies → {random}, "IRCTC" is static → keep
+
+Example 2 - Airtel (time varies):
+SMS: "<#> 1770 is your OTP to login into Airtel Thanks app. Valid for 100 secs. Do not share with anyone."
+Template: "<#> {otp} is your OTP to login into Airtel Thanks app. Valid for {time}. Do not share with anyone."
+Why: "1770" → {otp}, "100 secs" varies → {time}, "Airtel" static → keep
+
+Example 3 - Jio (simple):
 SMS: "791648 is your One time password (OTP) to login to MyJio. Do not share OTP with anyone."
 Template: "{otp} is your One time password (OTP) to login to MyJio. Do not share OTP with anyone."
+Why: Only OTP varies, everything else static
 
-Example 3 - Airtel style:
-SMS: "<#> 1770 is your OTP to login. Valid for 100 secs."
-Template: "<#> {otp} is your OTP to login. Valid for {time}."
+Example 4 - With URL and token:
+SMS: "123456 is your code. Click bit.ly/xyz?token=abc123 to verify"
+Template: "{otp} is your code. Click {any} to verify"
+Why: URL varies → {any}
 
-${validationResult && !validationResult.valid ? `PREVIOUS ATTEMPT FAILED: ${validationResult.reason}
+Example 5 - Paytm (merchant name varies):
+SMS: "Your OTP for login to Paytm is 884721. Valid for Merchant: AmazonPay"
+Template: "Your OTP for login to Paytm is {otp}. Valid for Merchant: {random}"
+Why: Merchant name varies → {random}
 
-${validationResult.reason.includes('multiple {otp}') ? 'You used {otp} multiple times. Use it ONLY ONCE - only for the first OTP code.' : ''}
-${validationResult.reason.includes('No {otp}') ? 'You did not use {otp} at all. You MUST replace the OTP CODE (digits like 791648) with {otp}.' : ''}
-${validationResult.reason.includes('Could not extract') ? 'Template structure did not match the SMS. Keep the exact same text, just replace the OTP CODE with {otp}.' : ''}
+Example 6 - WhatsApp (device name varies):
+SMS: "Your WhatsApp code is 789-012. Don't share this code with anyone. Device: iPhone 12 Pro"
+Template: "Your WhatsApp code is {otp}. Don't share this code with anyone. Device: {random}"
+Why: Device name varies → {random}
 
-Remember:
-- Replace ONLY the numeric OTP code with {otp}
-- Keep the word "OTP" in the text as-is
-- Use {otp} exactly ONCE` : ''}
+Example 7 - Multiple variables:
+SMS: "Dear Customer, use 456789 as verification code for ICICI Bank ending 4589. Valid for 3 min. Ref: ABC123XYZ"
+Template: "Dear Customer, use {otp} as verification code for ICICI Bank ending {random}. Valid for {time}. Ref: {random}"
+Why: OTP, card ending, time, reference all vary
 
-YOUR TASK:
+${validationResult && !validationResult.valid ? `
+=== PREVIOUS ATTEMPT FAILED ===
+Error: ${validationResult.reason}
+
+${validationResult.reason.includes('No {otp}') ? '🔴 You forgot to replace the OTP code with {otp}' : ''}
+${validationResult.reason.includes('multiple') ? '🔴 You used {otp} multiple times. Use it only for the first OTP' : ''}
+${validationResult.reason.includes('Could not extract') ? '🔴 Template does not match. You probably kept a variable value that should be {random}' : ''}
+
+Think: What varies between messages? Replace ALL varying parts with placeholders.
+` : ''}
+
+=== YOUR TASK ===
 SMS: "${smsText}"
 
-Return ONLY the template string. Replace the OTP CODE (the digits) with {otp}. Keep everything else exactly the same.
+Generate template that will work for ANY variation of this SMS:
 `;
 
 
@@ -159,7 +269,7 @@ Return ONLY the template string. Replace the OTP CODE (the digits) with {otp}. K
         messages: [
           {
             role: "system",
-            content: "You are an SMS template generator. Replace the OTP CODE (numeric digits) with {otp}. Keep the word 'OTP' in text unchanged. Return ONLY the template, no explanations. Use {otp} exactly ONCE."
+            content: "You are an SMS template generator. Create templates that work for ANY variation of the SMS format. Replace: OTP codes → {otp} (once only), usernames/IDs/names → {random}, time durations → {time}, dates → {date}, URLs → {any}. Keep company names, app names, and words like OTP/password unchanged. Return ONLY the template string."
           },
           {
             role: "user",
@@ -192,50 +302,29 @@ Return ONLY the template string. Replace the OTP CODE (the digits) with {otp}. K
     } while (!validationResult.valid && attempts < maxAttempts);
 
     if (!validationResult.valid) {
-      let assistantExplanation = '';
-
-      if (validationResult.reason.includes('multiple')) {
-        assistantExplanation = `The AI generated a template with multiple {otp} placeholders, which is not allowed. This usually happens when the SMS contains the OTP multiple times.
-
-Suggested solutions:
-1. Try using only the first occurrence of the OTP in your SMS
-2. Remove any repeated OTP references from the SMS text
-3. If the OTP appears at the end (like #5672), consider omitting that part
-4. Example: For "Dear customer, 5672 is your OTP... #5672", use "Dear customer, 5672 is your OTP..."`;
-
-      } else if (validationResult.reason.includes('No {otp}')) {
-        assistantExplanation = `The generated template doesn't contain any {otp} placeholder. This means the AI didn't identify an OTP in your SMS.
-
-Suggested solutions:
-1. Ensure your SMS contains a clear OTP (numbers or alphanumeric code)
-2. Make sure the OTP is not obscured by special characters or formatting
-3. Try rephrasing the SMS to highlight the OTP more clearly`;
-
-      } else if (validationResult.reason.includes('Could not extract')) {
-        assistantExplanation = `The template was generated but couldn't extract the OTP from your SMS. This might be due to complex formatting or unusual OTP patterns.
-
-Suggested solutions:
-1. Simplify the SMS text by removing unnecessary details
-2. Ensure the OTP is in a standard format (4-6 digits or alphanumeric)
-3. Avoid having the OTP multiple times in the message
-4. Contact support with the exact SMS for manual template creation`;
-
-      } else {
-        assistantExplanation = `The template generation failed due to: ${validationResult.reason}
-
-General advice:
-- Keep SMS messages clear and concise
-- Avoid multiple OTP references
-- Use standard OTP formats (e.g., 4-6 digits)
-- If issues persist, contact support with the exact SMS text for assistance`;
-      }
+      // MANUAL FIX MODE: Return the last attempted template with detailed info
+      const regexList = buildSmartOtpRegexList(template);
+      const generatedRegex = regexList.length > 0 ? regexList[0].toString() : 'Failed to build';
 
       return NextResponse.json(
         {
           error: `Failed to generate valid template after ${maxAttempts} attempts`,
           details: validationResult.reason,
-          assistantExplanation,
-          supportContact: "For immediate assistance, please contact support with the exact SMS text."
+          lastAttempt: template,
+          generatedRegex: generatedRegex,
+          originalSms: smsText,
+          canRetry: true,
+          manualFixInstructions: {
+            step1: "Review the 'lastAttempt' template above",
+            step2: "Edit the template to fix the issue",
+            step3: "POST again with 'template' parameter set to your fixed version",
+            step4: "Example: {\"smsText\": \"...\", \"template\": \"your fixed template\"}"
+          },
+          commonFixes: {
+            multipleOtp: "Remove extra {otp} - keep only the first occurrence",
+            noOtp: "Add {otp} where the OTP code appears in the SMS",
+            extractionFailed: "Ensure template structure matches SMS exactly (spaces, punctuation)"
+          }
         },
         { status: 400 }
       );
