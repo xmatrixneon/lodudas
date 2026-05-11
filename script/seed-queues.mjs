@@ -67,7 +67,7 @@ async function seedQueues() {
       results.push({ queue: 'quality-suspend', error: error.message, status: 'error' });
     }
     try {
-      const recoverJob = await addSuspendJob({ type: 'suspend-recover', delay: 4000 });
+      const recoverJob = await addSuspendJob({ type: 'recovery-check', delay: 4000 });
       console.log(`✓ Suspend recover job seeded: ${recoverJob.id}`);
       results.push({ queue: 'quality-suspend', jobId: recoverJob.id, status: 'success' });
     } catch (error) {

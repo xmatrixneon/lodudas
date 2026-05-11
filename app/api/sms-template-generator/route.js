@@ -110,59 +110,47 @@ export async function POST(request) {
       attempts++;
 
       const prompt = `
-You are an expert SMS template generator. Convert the following SMS message into a template using the specific placeholder rules. The template must be compatible with our regex builder system and must successfully extract the OTP from the SMS.
+You are an SMS template generator. Convert the SMS to a template by replacing ONLY the OTP CODE (the digits/numbers) with {otp}.
 
-CRITICAL RULES:
-- You MUST use exactly ONE {otp} placeholder in the entire template
-- Using multiple {otp} placeholders will cause regex errors and template failure
-- If the SMS contains the OTP multiple times, choose the most appropriate one (usually the first occurrence)
-- The template MUST match the exact structure of the SMS, including punctuation and spacing
+IMPORTANT DISTINCTIONS:
+- OTP CODE = numeric code like "791648", "123456" → replace with {otp}
+- The word "OTP" in text = keep as-is, do NOT replace
+- Use {otp} exactly ONCE in the entire template
 
-Special placeholders supported:
-- {otp} → (?<otp>[A-Za-z0-9\-]{3,12}) - Use for OTP digits/alphanumeric (ONLY ONE PER TEMPLATE)
-- {date} / {datetime} / {time} → .* - Use for durations, dates, times
-- {random} → [A-Za-z0-9]{3,15} - Use for purely alphanumeric random strings (no special chars like /+)
-- {any} → .* - Use as fallback for anything else (links, tokens with special chars, repeated OTP references)
+Placeholders:
+- {otp} - Replace the OTP CODE (digits only) - USE ONLY ONCE
+- {time} - For durations like "5 min", "100 secs"
+- {any} - For anything else (URLs, random strings, references)
 
-Additional Rules:
-1. Always replace OTP digits/alpha with {otp} (but only once)
-2. Durations → {time}
-3. Random purely alphanumeric → {random}
-4. Random with /, +, . → {any}
-5. Keep static text exactly as-is
-6. Spaces collapse into \\s*
-7. : matches : or ：
-8. . matches .*
-9. # symbols should be preserved or handled with {any} if followed by numbers
-10. @ symbols in URLs should be preserved or handled with {any}
+EXAMPLES:
 
-Example 1:
-SMS: "<#> 1770 is your OTP to login into Airtel Thanks app. Valid for 100 secs. Do not share with anyone. If this was not you click i.airtel.in/Contact N9BWuqauU1y"
-Template: "<#> {otp} is your OTP to login into Airtel Thanks app. Valid for {time}. Do not share with anyone. If this was not you click {any} {random}"
+Example 1 - Simple:
+SMS: "123456 is your OTP for verification."
+Template: "{otp} is your OTP for verification."
 
-Example 2 (SPECIFIC FOR REPEATED OTP):
-SMS: "Dear customer, 5672 is the one Time Password from Vi. Expires in 3 min. Please do not share this OTP with anyone.OTP @www.myvi.in #5672"
-Template: "Dear customer, {otp} is the one Time Password from Vi. Expires in {time}. Please do not share this OTP with anyone.OTP @www.myvi.in #{any}"
+Example 2 - MyJio style:
+SMS: "791648 is your One time password (OTP) to login to MyJio. Do not share OTP with anyone."
+Template: "{otp} is your One time password (OTP) to login to MyJio. Do not share OTP with anyone."
 
-${validationResult && !validationResult.valid ? `Previous attempt failed: ${validationResult.reason}.
+Example 3 - Airtel style:
+SMS: "<#> 1770 is your OTP to login. Valid for 100 secs."
+Template: "<#> {otp} is your OTP to login. Valid for {time}."
 
-ANALYSIS: The generated template did not work with our regex system. ${validationResult.reason.includes('multiple') ? 'The template contained multiple {otp} placeholders which is not allowed.' : 'The template could not extract the OTP from the SMS.'}
+${validationResult && !validationResult.valid ? `PREVIOUS ATTEMPT FAILED: ${validationResult.reason}
 
-Please generate a new template that:
-- Contains exactly ONE {otp} placeholder
-- Matches the SMS structure precisely including punctuation and spacing
-- Uses {any} for any repeated OTP references (like #5672 at the end)
-- Uses {time} for durations like "3 min"
-- Preserves all static text exactly as-is
-- Handles @ symbols in URLs with {any}
-- Handles # symbols followed by numbers with {any}
+${validationResult.reason.includes('multiple {otp}') ? 'You used {otp} multiple times. Use it ONLY ONCE - only for the first OTP code.' : ''}
+${validationResult.reason.includes('No {otp}') ? 'You did not use {otp} at all. You MUST replace the OTP CODE (digits like 791648) with {otp}.' : ''}
+${validationResult.reason.includes('Could not extract') ? 'Template structure did not match the SMS. Keep the exact same text, just replace the OTP CODE with {otp}.' : ''}
 
-Focus on replacing only the first occurrence of the OTP with {otp} and use {any} for any subsequent occurrences or URL fragments.` : ''}
+Remember:
+- Replace ONLY the numeric OTP code with {otp}
+- Keep the word "OTP" in the text as-is
+- Use {otp} exactly ONCE` : ''}
 
-Now convert this SMS:
-"${smsText}"
+YOUR TASK:
+SMS: "${smsText}"
 
-Return ONLY the template string, nothing else.
+Return ONLY the template string. Replace the OTP CODE (the digits) with {otp}. Keep everything else exactly the same.
 `;
 
 
@@ -171,7 +159,7 @@ Return ONLY the template string, nothing else.
         messages: [
           {
             role: "system",
-            content: "You are an expert SMS template generator. Return ONLY the template string, no explanations. Ensure the template contains exactly one {otp} placeholder and can extract the OTP from the SMS. Follow the user's instructions precisely, especially about using only one {otp} and handling repeated OTPs with {any}. IMPORTANT: Always return the FULL template including all parts of the original SMS message."
+            content: "You are an SMS template generator. Replace the OTP CODE (numeric digits) with {otp}. Keep the word 'OTP' in text unchanged. Return ONLY the template, no explanations. Use {otp} exactly ONCE."
           },
           {
             role: "user",
@@ -191,8 +179,11 @@ Return ONLY the template string, nothing else.
         throw new Error(`Failed to generate template. API response: ${completion.choices?.length || 0} choices returned`);
       }
 
-      // Clean the template - remove any surrounding quotes or unwanted characters
-      template = template.replace(/^"+|"+$/g, '').trim();
+      // Clean the template - remove markdown code blocks, quotes, and unwanted characters
+      template = template.replace(/^```[a-z]*\n?|\n?```$/gi, '') // Remove markdown code blocks
+                        .replace(/^[`'"|\\-]+|[`'"|\\-]+$/g, '') // Remove quotes, pipes, hyphens
+                        .replace(/^"+|"+$/g, '') // Remove double quotes (AI wraps response in quotes)
+                        .trim();
 
       // Validate the generated template
       validationResult = validateTemplate(template, smsText);
