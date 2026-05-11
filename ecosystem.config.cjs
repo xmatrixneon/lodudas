@@ -14,6 +14,24 @@ const mediumConcurrencyWorkers = cpuCount; // 12 concurrent (was 6)
 const lowConcurrencyWorkers = Math.floor(cpuCount / 2); // 6 concurrent (was 4)
 
 module.exports = {
+  // Startup hook to seed BullMQ queues with initial jobs
+  // This ensures workers have jobs to process on startup
+  hooks: {
+    after_ready: async () => {
+      const { spawn } = require('child_process');
+      console.log('[PM2 Hook] Seeding BullMQ queues...');
+      return new Promise((resolve) => {
+        const seed = spawn('node', ['script/seed-queues.mjs'], {
+          stdio: 'inherit',
+          cwd: process.cwd(),
+        });
+        seed.on('close', (code) => {
+          console.log(`[PM2 Hook] Queue seeding completed with code ${code}`);
+          resolve();
+        });
+      });
+    },
+  },
   apps: [
     // ==========================================
     // Main Application - Cluster Mode

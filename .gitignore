@@ -37,3 +37,7 @@ next-env.d.ts
 # Git worktrees
 .worktrees/
 EOF
+!.gitignore
+
+mongobackup/
+deployment/sites-available/
