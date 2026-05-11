@@ -1,271 +1,331 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Loader2, MessageSquare, Code, Copy, CheckCircle, Info, AlertTriangle, Wand2 } from "lucide-react";
+import { Loader2, MessageSquare, Code, Copy, Play, CheckCircle, XCircle, Send, Bot } from "lucide-react";
 import { toast } from "sonner";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+
+interface Message {
+  role: 'user' | 'assistant';
+  content: string;
+  template?: string;
+  otp?: string;
+  error?: string;
+}
 
 export default function SmsTemplateGenerator() {
-  const [smsText, setSmsText] = useState('');
-  const [template, setTemplate] = useState('');
-  const [extractedOtp, setExtractedOtp] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [retryCount, setRetryCount] = useState(0);
-
-  const exampleMessages = [
+  const [messages, setMessages] = useState<Message[]>([
     {
-      text: "Your OTP is 123456",
-      description: "Simple OTP message"
-    },
-    {
-      text: "<#> 1770 is your OTP to login into Airtel Thanks app. Valid for 100 secs. Do not share with anyone. If this was not you click i.airtel.in/Contact N9BWuqauU1y",
-      description: "Airtel OTP example"
-    },
-    {
-      text: "Your verification code is 789012. Expires in 5 minutes.",
-      description: "Verification code with expiry"
+      role: 'assistant',
+      content: 'Hi! I\'m your SMS template generator. Send me an SMS message and I\'ll create a template for you. You can also ask me to fix or improve templates!'
     }
-  ];
+  ]);
+  const [input, setInput] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [testSms, setTestSms] = useState('');
+  const [testResult, setTestResult] = useState<{ success: boolean; otp?: string; error?: string } | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const loadExample = (exampleText: string) => {
-    setSmsText(exampleText);
-    setTemplate('');
-    setExtractedOtp('');
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
-  const handleGenerateTemplate = async (isRetry = false) => {
-    if (!smsText.trim()) {
-      toast.error('Please enter SMS text');
-      return;
-    }
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
 
+  const handleSend = async () => {
+    if (!input.trim()) return;
+
+    const userMessage: Message = { role: 'user', content: input.trim() };
+    setMessages(prev => [...prev, userMessage]);
+    setInput('');
     setIsLoading(true);
-    setError(null);
-    const toastId = toast.loading(isRetry ? 'AI is fixing...' : 'Generating template...');
+    setTestResult(null);
 
     try {
-      const response = await fetch('/api/sms-template-generator', {
+      const response = await fetch('/api/sms-template-generator/chat', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ smsText: smsText.trim() }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: input.trim(),
+          history: messages.slice(-10) // Send last 10 messages for context
+        }),
       });
 
       const data = await response.json();
 
-      if (!response.ok) {
-        setError(data.details || data.error || 'Failed to generate template');
-        toast.error('Generation failed. Click "Ask AI to Fix" to retry.', { id: toastId });
-        return;
-      }
+      if (data.success) {
+        const assistantMessage: Message = {
+          role: 'assistant',
+          content: data.response || 'Here\'s your template:',
+          template: data.template,
+          otp: data.extractedOtp
+        };
+        setMessages(prev => [...prev, assistantMessage]);
 
-      setTemplate(data.template);
-      setExtractedOtp(data.extractedOtp || '');
-      setError(null);
-      setRetryCount(0);
-
-      if (data.extractedOtp) {
-        toast.success(`✅ Successfully extracted OTP: ${data.extractedOtp}`, { id: toastId });
+        // Auto-fill test SMS if this was a generation request
+        if (data.originalSms) {
+          setTestSms(data.originalSms);
+        }
       } else {
-        toast.success('Template generated successfully!', { id: toastId });
+        const errorMessage: Message = {
+          role: 'assistant',
+          content: data.error || 'Failed to generate template',
+          error: data.details
+        };
+        setMessages(prev => [...prev, errorMessage]);
       }
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Failed to generate template. Please try again.';
-      setError(errorMessage);
-      toast.error(errorMessage, { id: toastId });
+      const errorMessage: Message = {
+        role: 'assistant',
+        content: 'Error communicating with the server'
+      };
+      setMessages(prev => [...prev, errorMessage]);
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleRetry = () => {
-    setRetryCount(prev => prev + 1);
-    handleGenerateTemplate(true);
+  const handleTestTemplate = async (template: string) => {
+    if (!testSms.trim()) {
+      toast.error('Please enter an SMS to test against');
+      return;
+    }
+
+    setTestResult(null);
+
+    try {
+      const response = await fetch('/api/sms-template-generator/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ template, smsText: testSms.trim() }),
+      });
+
+      const data = await response.json();
+      setTestResult(data);
+
+      if (data.success) {
+        toast.success(`✅ Template works! Extracted OTP: ${data.otp}`);
+      } else {
+        toast.error(`❌ Template failed: ${data.error}`);
+      }
+    } catch (err) {
+      toast.error('Error testing template');
+    }
   };
 
-  const handleCopyTemplate = () => {
+  const handleCopyTemplate = (template: string) => {
     navigator.clipboard.writeText(template);
-    toast.success("Template copied to clipboard!");
+    toast.success("Template copied!");
   };
+
+  const exampleMessages = [
+    { text: "Generate template for: 668523 is OTP for Mobile number verification of User Renu_1982Mishra -IRCTC", label: "IRCTC SMS" },
+    { text: "Create template for: OTP for login in your CYBER LINK account is 9980. Please enter this for verify your idaentity. -CYBER LINK", label: "CYBER LINK SMS" },
+    { text: "Generate template for: <#> 1770 is your OTP to login into Airtel Thanks app. Valid for 100 secs.", label: "Airtel SMS" }
+  ];
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight flex items-center gap-2">
-            <MessageSquare className="h-6 w-6 md:h-8 md:w-8" />
-            SMS Template Generator
+            <Bot className="h-6 w-6 md:h-8 md:w-8" />
+            AI SMS Template Generator
           </h1>
           <p className="text-sm md:text-base text-muted-foreground">
-            Convert SMS messages into regex using AI
+            Chat with AI to generate and test SMS templates
           </p>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-        {/* Input Section */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <MessageSquare className="h-5 w-5" />
-              Input SMS
-            </CardTitle>
-            <CardDescription>
-              Paste your SMS message here..
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <Textarea
-              placeholder="Paste SMS message here..."
-              value={smsText}
-              onChange={(e) => setSmsText(e.target.value)}
-              rows={6}
-              className="resize-none"
-            />
-            
-            {/* Example Messages */}
-            <div className="space-y-2">
-              <p className="text-sm text-muted-foreground">Try these examples:</p>
-              <div className="grid grid-cols-1 gap-2">
-                {exampleMessages.map((example, index) => (
-                  <Button
-                    key={index}
-                    variant="outline"
-                    size="sm"
-                    className="justify-start text-left h-auto py-2"
-                    onClick={() => loadExample(example.text)}
-                  >
-                    <div className="text-xs truncate">
-                      <div className="font-medium">{example.description}</div>
-                      <div className="text-muted-foreground truncate">{example.text}</div>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Chat Section */}
+        <div className="lg:col-span-2 space-y-4">
+          <Card className="h-[600px] flex flex-col">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <MessageSquare className="h-5 w-5" />
+                Chat with AI
+              </CardTitle>
+              <CardDescription>
+                Send SMS messages or ask for template improvements
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex-1 flex flex-col p-0">
+              {/* Messages */}
+              <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                {messages.map((msg, idx) => (
+                  <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                    <div className={`max-w-[80%] rounded-lg p-3 ${
+                      msg.role === 'user'
+                        ? 'bg-primary text-primary-foreground'
+                        : 'bg-muted'
+                    }`}>
+                      {msg.template ? (
+                        <div className="space-y-2">
+                          <p className="text-sm">{msg.content}</p>
+                          <div className="p-2 bg-background rounded border">
+                            <code className="text-sm whitespace-pre-wrap break-words">
+                              {msg.template}
+                            </code>
+                          </div>
+                          <div className="flex gap-2 flex-wrap">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleCopyTemplate(msg.template!)}
+                            >
+                              <Copy className="h-3 w-3 mr-1" />
+                              Copy
+                            </Button>
+                            <Button
+                              size="sm"
+                              onClick={() => setTestSms(messages.find(m => m.template)?.content?.match(/SMS:\s*"([^"]+)"/)?.[1] || '')}
+                            >
+                              <Play className="h-3 w-3 mr-1" />
+                              Test
+                            </Button>
+                          </div>
+                          {msg.otp && (
+                            <div className="flex items-center gap-1 text-xs">
+                              <CheckCircle className="h-3 w-3 text-green-500" />
+                              <span>Extracted OTP: {msg.otp}</span>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                      )}
                     </div>
-                  </Button>
+                  </div>
                 ))}
+                {isLoading && (
+                  <div className="flex justify-start">
+                    <div className="bg-muted rounded-lg p-3">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    </div>
+                  </div>
+                )}
+                <div ref={messagesEndRef} />
               </div>
-            </div>
 
-            <Button
-              onClick={handleGenerateTemplate}
-              disabled={isLoading || !smsText.trim()}
-              className="w-full"
-            >
-              {isLoading ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Generating...
-                </>
-              ) : (
-                'Generate Template'
-              )}
-            </Button>
-          </CardContent>
-        </Card>
+              {/* Input */}
+              <div className="border-t p-4 space-y-3">
+                <div className="flex gap-2">
+                  <Textarea
+                    placeholder="Send an SMS or ask for help..."
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleSend();
+                      }
+                    }}
+                    rows={2}
+                    className="resize-none"
+                  />
+                  <Button
+                    onClick={handleSend}
+                    disabled={isLoading || !input.trim()}
+                    size="icon"
+                    className="h-auto"
+                  >
+                    <Send className="h-4 w-4" />
+                  </Button>
+                </div>
+                <div className="flex gap-2 flex-wrap">
+                  {exampleMessages.map((ex, i) => (
+                    <Button
+                      key={i}
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setInput(ex.text)}
+                      className="text-xs"
+                    >
+                      {ex.label}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
 
-        {/* Output Section */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Code className="h-5 w-5" />
-              Generated Template
-            </CardTitle>
-            <CardDescription>
-              AI-generated template compatible with your regex builder
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {error ? (
-              <>
-                {/* Error Alert */}
-                <Alert variant="destructive">
-                  <AlertTriangle className="h-4 w-4" />
-                  <AlertTitle>Generation Failed</AlertTitle>
-                  <AlertDescription className="mt-2">
-                    <div className="text-sm">{error}</div>
-                  </AlertDescription>
-                </Alert>
+        {/* Test Section */}
+        <div className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Play className="h-5 w-5" />
+                Test Template
+              </CardTitle>
+              <CardDescription>
+                Test if a template works with an SMS
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div>
+                <label className="text-sm font-medium mb-2 block">Test SMS:</label>
+                <Textarea
+                  placeholder="Enter SMS to test against..."
+                  value={testSms}
+                  onChange={(e) => setTestSms(e.target.value)}
+                  rows={4}
+                  className="resize-none text-sm font-mono"
+                />
+              </div>
 
-                {/* Ask AI to Fix Button */}
-                <Button
-                  onClick={handleRetry}
-                  disabled={isLoading}
-                  className="w-full"
-                >
-                  {isLoading ? (
+              {testResult && (
+                <Alert variant={testResult.success ? "default" : "destructive"}>
+                  {testResult.success ? (
                     <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      AI is fixing...
+                      <CheckCircle className="h-4 w-4" />
+                      <AlertDescription>
+                        ✅ Template works! Extracted OTP: <strong>{testResult.otp}</strong>
+                      </AlertDescription>
                     </>
                   ) : (
                     <>
-                      <Wand2 className="mr-2 h-4 w-4" />
-                      Ask AI to Fix (Retry)
+                      <XCircle className="h-4 w-4" />
+                      <AlertDescription>
+                        ❌ {testResult.error}
+                      </AlertDescription>
                     </>
                   )}
-                </Button>
-              </>
-            ) : template ? (
-              <>
-                <div className="p-3 bg-muted rounded-md border">
-                  <code className="text-sm whitespace-pre-wrap break-words">
-                    {template}
-                  </code>
-                </div>
-                {extractedOtp && (
-                  <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
-                    <CheckCircle className="h-4 w-4" />
-                    <span>Extracted OTP: <strong>{extractedOtp}</strong></span>
-                  </div>
-                )}
-                <Button
-                  onClick={handleCopyTemplate}
-                  variant="outline"
-                  className="w-full"
-                >
-                  <Copy className="mr-2 h-4 w-4" />
-                  Copy Template
-                </Button>
-              </>
-            ) : (
-              <div className="text-muted-foreground text-sm text-center py-8">
-                Template will appear here after generation
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
+                </Alert>
+              )}
+            </CardContent>
+          </Card>
 
-      {/* Info Section */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Template Rules</CardTitle>
-          <CardDescription>
-            Special placeholders and their meanings
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-            <div className="space-y-2">
-              <div className="font-semibold">Placeholders:</div>
-              <div><code className="bg-muted px-1 rounded">{"{otp}"}</code> → OTP digits/alphanumeric</div>
-              <div><code className="bg-muted px-1 rounded">{"{time}"}</code> → Durations, dates, times</div>
-              <div><code className="bg-muted px-1 rounded">{"{random}"}</code> → Purely alphanumeric strings</div>
-              <div><code className="bg-muted px-1 rounded">{"{any}"}</code> → Anything else (links, special chars)</div>
-            </div>
-            <div className="space-y-2">
-              <div className="font-semibold">Rules:</div>
-              <div>• Only 1 {"{otp}"} per template</div>
-              <div>• Spaces collapse into \s*</div>
-              <div>• : matches : or ：</div>
-              <div>• . matches .*</div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>Quick Actions</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              <Button
+                variant="outline"
+                className="w-full justify-start"
+                onClick={() => setMessages([{ role: 'assistant', content: 'Hi! I\'m your SMS template generator. Send me an SMS message and I\'ll create a template for you. You can also ask me to fix or improve templates!' }])}
+              >
+                Clear Chat
+              </Button>
+              <Button
+                variant="outline"
+                className="w-full justify-start"
+                onClick={() => setInput('Help me understand template placeholders')}
+              >
+                Explain Placeholders
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
     </div>
   );
 }

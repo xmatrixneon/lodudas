@@ -176,91 +176,66 @@ export async function POST(request) {
       attempts++;
 
       const prompt = `
-You are an expert SMS template generator. Your template must work for ANY variation of the same SMS format.
+You are an SMS template generator. Replace variable parts with placeholders while keeping the exact same structure.
 
-=== CRITICAL RULE ===
-Ask yourself: "If this SMS comes again with different values (different OTP, different username, different time), will my template still work?"
-- If YES → Good template
-- If NO → Replace the variable part with a placeholder
+=== TWO RULES TO FOLLOW ===
 
-=== PLACEHOLDER GUIDE ===
+1. KEEP EXACT STRUCTURE:
+   - Same word order
+   - Same spelling (even typos like "idaentity")
+   - Same grammar (even wrong like "for verify")
+   - Same punctuation
 
-{otp}     → OTP/Verification code ONLY (use exactly once!)
-{random}  → Usernames, IDs, names, alphanumeric strings that vary
-{time}    → Time durations (5 min, 100 secs, 2 hours, 30 minutes)
-{date}    → Dates (2024-01-15, Jan 15, 15/01/2024)
-{any}     → URLs, links, tokens with special chars (/, +, -, #, @)
+2. REPLACE VARIABLE PARTS:
+   - OTP codes → {otp} (MANDATORY, use once)
+   - Usernames/IDs/Names → {random} (if they vary per user)
+   - Time durations → {time} (100 secs, 5 min, etc.)
+   - URLs/Links → {any} (bit.ly, etc.)
 
-=== WHAT TO REPLACE (VARIES PER MESSAGE) ===
+=== EXAMPLES ===
 
-✅ MUST Replace:
-- OTP codes: "668523", "1770", "791648", "ABC-123" → {otp}
-- Usernames: "Renu_1982Mishra", "JohnDoe123" → {random}
-- IDs: "ID: ABC123", "Ref: XYZ789" → "ID: {random}", "Ref: {random}"
-- Customer names: "Dear Amit", "Hello Priya" → "Dear {random}"
-- Time: "100 secs", "5 min", "2 hours" → {time}
-- Dates: "2024-01-15", "today" → {date}
-- URLs: "bit.ly/abc", "wa.me/123" → {any}
-- Tokens: "N9BWuqauU1y", "#abc123" → {random} or {any}
+Example 1 - CYBER LINK (keep typos!):
+SMS: "OTP for login in your CYBER LINK account is 9980. Please enter this for verify your idaentity. -CYBER LINK"
+Template: "OTP for login in your CYBER LINK account is {otp}. Please enter this for verify your idaentity. -CYBER LINK"
+Note: "idaentity" typo kept, "for verify" kept, only "9980" → {otp}
 
-❌ DO NOT Replace (static text):
-- Words: "OTP", "password", "code", "verification", "login", "authenticate"
-- Company names: "IRCTC", "Airtel", "Jio", "Vi", "Paytm"
-- App names: "Twitter", "Facebook", "WhatsApp"
-- Static phrases: "DO NOT disclose", "Valid for", "Expires in", "is your"
-
-=== REAL EXAMPLES ===
-
-Example 1 - IRCTC (username varies):
+Example 2 - IRCTC (username varies):
 SMS: "668523 is OTP for Mobile number verification of User Renu_1982Mishra. DO NOT disclose it to anyone -IRCTC"
 Template: "{otp} is OTP for Mobile number verification of User {random}. DO NOT disclose it to anyone -IRCTC"
-Why: Username "Renu_1982Mishra" varies → {random}, "IRCTC" is static → keep
+Note: "668523" → {otp}, "Renu_1982Mishra" → {random} (varies per user)
 
-Example 2 - Airtel (time varies):
+Example 3 - Airtel (time varies):
 SMS: "<#> 1770 is your OTP to login into Airtel Thanks app. Valid for 100 secs. Do not share with anyone."
 Template: "<#> {otp} is your OTP to login into Airtel Thanks app. Valid for {time}. Do not share with anyone."
-Why: "1770" → {otp}, "100 secs" varies → {time}, "Airtel" static → keep
+Note: "1770" → {otp}, "100 secs" → {time}
 
-Example 3 - Jio (simple):
-SMS: "791648 is your One time password (OTP) to login to MyJio. Do not share OTP with anyone."
-Template: "{otp} is your One time password (OTP) to login to MyJio. Do not share OTP with anyone."
-Why: Only OTP varies, everything else static
-
-Example 4 - With URL and token:
-SMS: "123456 is your code. Click bit.ly/xyz?token=abc123 to verify"
-Template: "{otp} is your code. Click {any} to verify"
-Why: URL varies → {any}
-
-Example 5 - Paytm (merchant name varies):
-SMS: "Your OTP for login to Paytm is 884721. Valid for Merchant: AmazonPay"
-Template: "Your OTP for login to Paytm is {otp}. Valid for Merchant: {random}"
-Why: Merchant name varies → {random}
-
-Example 6 - WhatsApp (device name varies):
-SMS: "Your WhatsApp code is 789-012. Don't share this code with anyone. Device: iPhone 12 Pro"
-Template: "Your WhatsApp code is {otp}. Don't share this code with anyone. Device: {random}"
-Why: Device name varies → {random}
-
-Example 7 - Multiple variables:
-SMS: "Dear Customer, use 456789 as verification code for ICICI Bank ending 4589. Valid for 3 min. Ref: ABC123XYZ"
-Template: "Dear Customer, use {otp} as verification code for ICICI Bank ending {random}. Valid for {time}. Ref: {random}"
-Why: OTP, card ending, time, reference all vary
+Example 4 - Simple:
+SMS: "123456 is your OTP"
+Template: "{otp} is your OTP"
 
 ${validationResult && !validationResult.valid ? `
 === PREVIOUS ATTEMPT FAILED ===
 Error: ${validationResult.reason}
 
-${validationResult.reason.includes('No {otp}') ? '🔴 You forgot to replace the OTP code with {otp}' : ''}
-${validationResult.reason.includes('multiple') ? '🔴 You used {otp} multiple times. Use it only for the first OTP' : ''}
-${validationResult.reason.includes('Could not extract') ? '🔴 Template does not match. You probably kept a variable value that should be {random}' : ''}
+${validationResult.reason.includes('No {otp}') ? '🔴 You forgot to use {otp}. You must replace the OTP number with {otp}' : ''}
+${validationResult.reason.includes('multiple') ? '🔴 You used {otp} multiple times. Use it only ONCE' : ''}
+${validationResult.reason.includes('Could not extract') ? `🔴 REGEX MISMATCH - Your template structure does NOT match the SMS!
+Check these:
+- Did you change word order? Keep the SAME order!
+- Did you fix typos? Keep typos as-is!
+- Did you fix grammar? Keep grammar as-is!
+- Your template must match the SMS EXACTLY except for {otp}, {random}, {time}, {any}
 
-Think: What varies between messages? Replace ALL varying parts with placeholders.
+Original: "${smsText}"
+Your attempt must have the exact same structure!` : ''}
+
+Remember: Find the OTP number, replace with {otp}, keep EVERYTHING else exactly the same!
 ` : ''}
 
 === YOUR TASK ===
 SMS: "${smsText}"
 
-Generate template that will work for ANY variation of this SMS:
+Template (keep exact structure, only replace OTP code with {otp}):
 `;
 
 
@@ -269,7 +244,7 @@ Generate template that will work for ANY variation of this SMS:
         messages: [
           {
             role: "system",
-            content: "You are an SMS template generator. Create templates that work for ANY variation of the SMS format. Replace: OTP codes → {otp} (once only), usernames/IDs/names → {random}, time durations → {time}, dates → {date}, URLs → {any}. Keep company names, app names, and words like OTP/password unchanged. Return ONLY the template string."
+            content: "You are an SMS template generator. Replace: OTP codes → {otp} (once), usernames/IDs → {random}, time durations → {time}, URLs → {any}. Keep exact word order, spelling, and even typos. Return ONLY the template."
           },
           {
             role: "user",
