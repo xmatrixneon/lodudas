@@ -148,5 +148,20 @@ module.exports = {
       // Increased memory for 62GB RAM
       node_args: '--max-old-space-size=1024',
     },
+
+    // Orders Cleanup Worker - Maintenance task (every 24 hours)
+    {
+      name: 'worker:orders-cleanup',
+      script: 'workers/orders-cleanup-worker.js',
+      instances: 1,
+      env: {
+        BULLMQ_ORDERS_CLEANUP_ENABLED: 'true',
+        ORDERS_RETENTION_DAYS: '7',
+        ORDERS_CLEANUP_DRY_RUN: 'false',
+        ORDERS_CLEANUP_BATCH_SIZE: '10000',
+      },
+      // Increased memory for 62GB RAM
+      node_args: '--max-old-space-size=1024',
+    },
   ],
 };

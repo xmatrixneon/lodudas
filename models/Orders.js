@@ -80,24 +80,33 @@ const OrdersSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Performance indexes for quality management
-OrdersSchema.index({ number: 1, active: 1, failureReason: 1 });
-OrdersSchema.index({ number: 1, createdAt: -1 });
+// === OPTIMIZED INDEXES (reduced from 8 to 4) ===
 
-// Additional performance optimization indexes
+// Query: { countryid, serviceid, active, createdAt } - PHP API number allocation
 OrdersSchema.index({ countryid: 1, serviceid: 1, active: 1, createdAt: -1 });
-OrdersSchema.index({ active: 1, isused: 1, createdAt: -1 });
-OrdersSchema.index({ active: 1, failureReason: 1, createdAt: -1 });
 
-// Covered query index for number allocation
+// Query: { active, isused, createdAt } - Fetch worker active orders
+OrdersSchema.index({ active: 1, isused: 1, createdAt: -1 });
+
+// Query: { number, active, countryid, serviceid, isused, createdAt } - Comprehensive covered query
 OrdersSchema.index({
   number: 1,
   active: 1,
   countryid: 1,
   serviceid: 1,
-  createdAt: -1,
-  isused: 1
+  isused: 1,
+  createdAt: -1
 });
+
+// Query: { number, countryid, serviceid, active, isused, updatedAt } - PHP cooldown lookup
+OrdersSchema.index({
+  number: 1,
+  countryid: 1,
+  serviceid: 1,
+  active: 1,
+  isused: 1,
+  updatedAt: -1
+}, { name: 'cooldown_lookup_idx' });
 
 const Orders = mongoose.models.Orders || mongoose.model('Orders', OrdersSchema);
 
