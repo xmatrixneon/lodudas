@@ -21,8 +21,8 @@ const LockSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// TTL index - auto-expire locks after 24 hours
-LockSchema.index({ createdAt: 1 }, { expireAfterSeconds: 86400, name: 'createdAt_ttl' });
+// TTL index - auto-expire locks after 30 days
+LockSchema.index({ createdAt: 1 }, { expireAfterSeconds: 2592000, name: 'createdAt_ttl' });
 
 // Compound index for lock lookups in PHP API
 LockSchema.index({ number: 1, countryid: 1, serviceid: 1, locked: 1 }, { name: 'lookup_idx' });
