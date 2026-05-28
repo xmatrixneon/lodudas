@@ -70,7 +70,7 @@ module.exports = {
       env: {
         BULLMQ_FETCH_ENABLED: 'true',
         BULLMQ_CONCURRENCY_SMS_FETCH: String(highConcurrencyWorkers), // 24 concurrent jobs (was 12)
-        BULLMQ_SMS_FETCH_INTERVAL: '1000', // 1 second (was 2) - faster polling
+        BULLMQ_SMS_FETCH_INTERVAL: '3000', // 3 seconds
       },
       // Increased memory for 62GB RAM
       node_args: '--max-old-space-size=2048',
