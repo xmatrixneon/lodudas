@@ -41,3 +41,6 @@ EOF
 
 mongobackup/
 deployment/sites-available/
+
+# Critical collections backups (data backups shouldn't be in git)
+backups/critical-collections/
