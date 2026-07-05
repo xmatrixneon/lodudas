@@ -10,9 +10,44 @@ import { readFileSync } from 'fs';
 // Configuration
 const COOLDOWN_MINUTES = parseInt(process.env.FCM_KEEP_ALIVE_COOLDOWN || "3");
 const MIN_HEARTBEAT_AGE_SECONDS = parseInt(process.env.FCM_KEEP_ALIVE_MIN_HEARTBEAT_AGE || "45");
+const TARGET_ALL_DEVICES = process.env.FCM_KEEP_ALIVE_TARGET_ALL === 'true';
+const MAX_DEVICES_PER_CYCLE = parseInt(process.env.FCM_KEEP_ALIVE_MAX_DEVICES || "1000");
 
 // Track keep-alive attempts to avoid spamming
 const keepAliveAttempts = new Map();
+
+// Redis keys for offset tracking
+const REDIS_OFFSET_KEY = 'keepalive:device:offset';
+
+/**
+ * Get the current device offset from Redis
+ */
+async function getDeviceOffset() {
+  try {
+    // Use the existing Redis singleton from lib/queues/redis.js
+    const { getRedis } = await import('../../lib/queues/redis.js');
+    const redis = getRedis();
+    const offset = await redis.get(REDIS_OFFSET_KEY);
+    return offset ? parseInt(offset, 10) : 0;
+  } catch (error) {
+    console.error('[Keepalive] Error getting device offset:', error.message);
+    return 0;
+  }
+}
+
+/**
+ * Set the next device offset in Redis
+ */
+async function setDeviceOffset(offset) {
+  try {
+    // Use the existing Redis singleton from lib/queues/redis.js
+    const { getRedis } = await import('../../lib/queues/redis.js');
+    const redis = getRedis();
+    await redis.set(REDIS_OFFSET_KEY, offset.toString());
+  } catch (error) {
+    console.error('[Keepalive] Error setting device offset:', error.message);
+  }
+}
 
 /**
  * Initialize Firebase Admin SDK
@@ -114,6 +149,50 @@ async function findDevicesWithActiveOrders() {
 }
 
 /**
+ * Find ALL devices with FCM tokens (TARGET_ALL_DEVICES mode)
+ * Uses Redis-based cycling to process devices in batches
+ */
+async function findAllDevicesToPing() {
+  // Get total count of devices with FCM tokens
+  const totalCount = await Device.countDocuments({
+    isActive: true,
+    fcmToken: { $ne: null, $ne: "" }
+  });
+
+  if (totalCount === 0) {
+    return { devices: [], total: 0, startIndex: 0, endIndex: 0 };
+  }
+
+  // Get current offset from Redis
+  const currentOffset = await getDeviceOffset();
+  const startIndex = currentOffset % totalCount;
+  const endIndex = Math.min(startIndex + MAX_DEVICES_PER_CYCLE, totalCount);
+
+  // Fetch devices for this cycle using skip/limit for efficient pagination
+  const devices = await Device.find({
+    isActive: true,
+    fcmToken: { $ne: null, $ne: "" }
+  })
+    .skip(startIndex)
+    .limit(MAX_DEVICES_PER_CYCLE)
+    .lean();
+
+  // Calculate next offset (wrap around if needed)
+  const nextOffset = (startIndex + MAX_DEVICES_PER_CYCLE) % totalCount;
+
+  // Update Redis offset for next cycle
+  await setDeviceOffset(nextOffset);
+
+  return {
+    devices,
+    total: totalCount,
+    startIndex,
+    endIndex,
+    nextOffset
+  };
+}
+
+/**
  * Check if a device can receive a keep-alive ping
  */
 function canSendKeepAlive(device) {
@@ -181,17 +260,38 @@ async function sendKeepAlivePing(device) {
 }
 
 /**
- * Process devices with active orders and send keep-alive pings
+ * Process devices and send keep-alive pings
+ * Supports two modes: active orders only or all devices
  */
 async function sendKeepAlivePings() {
   const startTime = Date.now();
+  const mode = TARGET_ALL_DEVICES ? 'ALL_DEVICES' : 'ACTIVE_ORDERS';
 
   // console.log(`\n${'═'.repeat(60)}`);
   // console.log(`🔄 FCM KEEP-ALIVE SCAN  ${new Date().toISOString()}`);
+  // console.log(`   Mode: ${mode}`);
   // console.log(`${'═'.repeat(60)}`);
 
   try {
-    const devices = await findDevicesWithActiveOrders();
+    let devices = [];
+    let totalDevices = 0;
+    let startIndex = 0;
+    let endIndex = 0;
+
+    if (TARGET_ALL_DEVICES) {
+      // Get devices for this cycle using Redis-based cycling
+      const result = await findAllDevicesToPing();
+      devices = result.devices;
+      totalDevices = result.total;
+      startIndex = result.startIndex;
+      endIndex = result.endIndex;
+
+      console.log(`[Keepalive] ALL_DEVICES mode: Processing ${devices.length} devices (${startIndex}-${endIndex} of ${totalDevices} total)`);
+    } else {
+      // Original behavior: only devices with active orders
+      devices = await findDevicesWithActiveOrders();
+      console.log(`[Keepalive] ACTIVE_ORDERS mode: Processing ${devices.length} devices`);
+    }
 
     if (devices.length === 0) {
       // console.log(`${'═'.repeat(60)}\n`);
@@ -200,7 +300,8 @@ async function sendKeepAlivePings() {
         notificationsSent: 0,
         skipped: 0,
         staleTokensRemoved: 0,
-        failed: 0
+        failed: 0,
+        mode
       };
     }
 
@@ -213,10 +314,19 @@ async function sendKeepAlivePings() {
     let failCount = 0;
     let staleTokenCount = 0;
     let tooRecentCount = 0;
+    let processedCount = 0;
 
     for (const device of devices) {
+      processedCount++;
+      const deviceObj = typeof device.toObject === 'function' ? device.toObject() : device;
+
+      // Log progress every 100 devices when processing many devices
+      if (TARGET_ALL_DEVICES && processedCount % 100 === 0) {
+        console.log(`[Keepalive] Progress: ${processedCount}/${devices.length} devices processed...`);
+      }
+
       // Check heartbeat age
-      const heartbeatAge = Math.floor((Date.now() - new Date(device.lastHeartbeat).getTime()) / 1000);
+      const heartbeatAge = Math.floor((Date.now() - new Date(device.lastHeartbeat || deviceObj.lastHeartbeat).getTime()) / 1000);
 
       // Skip if heartbeat is too recent (device is actively maintaining connection)
       if (heartbeatAge < MIN_HEARTBEAT_AGE_SECONDS) {
@@ -227,8 +337,8 @@ async function sendKeepAlivePings() {
       }
 
       // Check cooldown
-      if (!canSendKeepAlive(device)) {
-        const attempts = keepAliveAttempts.get(device.deviceId);
+      if (!canSendKeepAlive(deviceObj)) {
+        const attempts = keepAliveAttempts.get(deviceObj.deviceId);
         const timeSinceLastAttempt = Math.floor((Date.now() - attempts?.lastAttempt || 0) / 1000 / 60);
         // console.log(`   ⏭️  SKIP     ${device.deviceId} (${device.name || 'unnamed'})`);
         // console.log(`      Reason: In cooldown (${timeSinceLastAttempt}/${COOLDOWN_MINUTES} minutes)`);
@@ -240,17 +350,17 @@ async function sendKeepAlivePings() {
       // console.log(`      Status: ${device.status}, Heartbeat age: ${heartbeatAge}s ago`);
 
       // Send FCM keep-alive notification
-      const result = await sendKeepAlivePing(device);
+      const result = await sendKeepAlivePing(deviceObj);
 
       if (result.success) {
-        recordKeepAliveAttempt(device.deviceId);
+        recordKeepAliveAttempt(deviceObj.deviceId);
         successCount++;
         // console.log(`      ✅ Keep-alive sent successfully`);
       } else if (result.isStaleToken) {
         staleTokenCount++;
         // Mark device as having no valid FCM token
         await Device.updateOne(
-          { deviceId: device.deviceId },
+          { deviceId: deviceObj.deviceId },
           { $unset: { fcmToken: "", fcmTokenUpdatedAt: "" } }
         );
         // console.log(`      ⚠️  Stale FCM token removed`);
@@ -264,7 +374,13 @@ async function sendKeepAlivePings() {
 
     const elapsed = Date.now() - startTime;
 
-    console.log(`[Keepalive] Scan complete: ${successCount} pinged, ${skipCount} skipped (cooldown), ${tooRecentCount} too recent, ${staleTokenCount} stale tokens, ${failCount} failed (${elapsed}ms)`);
+    if (TARGET_ALL_DEVICES) {
+      console.log(`[Keepalive] Cycle complete: ${successCount} pinged, ${skipCount} skipped (cooldown), ${tooRecentCount} too recent, ${staleTokenCount} stale tokens, ${failCount} failed (${elapsed}ms)`);
+      console.log(`[Keepalive] Next cycle: devices ${endIndex}-${Math.min(endIndex + MAX_DEVICES_PER_CYCLE, totalDevices)}`);
+    } else {
+      console.log(`[Keepalive] Scan complete: ${successCount} pinged, ${skipCount} skipped (cooldown), ${tooRecentCount} too recent, ${staleTokenCount} stale tokens, ${failCount} failed (${elapsed}ms)`);
+    }
+
     // console.log(`${'─'.repeat(60)}`);
     // console.log(`📊 SUMMARY  (${elapsed}ms)`);
     // console.log(`   ✅ Success: ${successCount} device(s) pinged`);
@@ -279,7 +395,10 @@ async function sendKeepAlivePings() {
       notificationsSent: successCount,
       skipped: skipCount + tooRecentCount,
       staleTokensRemoved: staleTokenCount,
-      failed: failCount
+      failed: failCount,
+      mode,
+      totalDevices: TARGET_ALL_DEVICES ? totalDevices : devices.length,
+      processedRange: TARGET_ALL_DEVICES ? { start: startIndex, end: endIndex } : null
     };
 
   } catch (err) {
@@ -291,7 +410,8 @@ async function sendKeepAlivePings() {
       skipped: 0,
       staleTokensRemoved: 0,
       failed: 0,
-      error: err.message
+      error: err.message,
+      mode
     };
   }
 }

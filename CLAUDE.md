@@ -226,21 +226,37 @@ Runs as PM2 process `worker:cleanup`:
 Runs as PM2 process `worker:keepalive` to proactively keep devices online:
 
 **Behavior:**
-- Scans for devices that have active orders (not just offline devices)
+- Two operational modes (configured via `FCM_KEEP_ALIVE_TARGET_ALL`):
+  - **ACTIVE_ORDERS mode** (default): Scans for devices with active orders
+  - **ALL_DEVICES mode**: Cycles through ALL devices with FCM tokens using Redis-based offset tracking
 - Sends FCM keep-alive pings to prevent devices from going offline
 - Skips devices with recent heartbeats (default: 45 seconds minimum)
 - Respects cooldown period (default: 3 minutes) between pings
 - Cleans up stale FCM tokens automatically
 - Runs periodically (default: every 30 seconds)
+- **Redis-based cycling** (ALL_DEVICES mode): Tracks current position in Redis to process devices in batches
+- **Batch processing** (ALL_DEVICES mode): Processes up to `MAX_DEVICES_PER_CYCLE` devices per cycle (default: 1000)
+- **Progress logging**: Reports progress every 100 devices when processing many devices
 
 **Key difference from Wake-Up Service:**
 - Wake-Up: Reactive - wakes devices that are already offline (currently removed)
-- Keep-Alive: Proactive - prevents devices with active orders from going offline
+- Keep-Alive: Proactive - prevents devices from going offline
 
 **Configuration via env vars:**
-- `FCM_KEEP_ALIVE_CRON` - Scan interval (default: `*/30 * * * * *` = every 30 sec)
+- `FCM_KEEP_ALIVE_TARGET_ALL` - Target ALL devices or only those with active orders (default: false)
 - `FCM_KEEP_ALIVE_COOLDOWN` - Minutes between keep-alive attempts (default: 3)
 - `FCM_KEEP_ALIVE_MIN_HEARTBEAT_AGE` - Min heartbeat age in seconds (default: 45)
+- `FCM_KEEP_ALIVE_MAX_DEVICES` - Max devices to process per cycle (default: 1000, only applies when TARGET_ALL=true)
+- Redis keys used:
+  - `keepalive:device:offset` - Tracks current position in device cycle
+
+**Cycle behavior (ALL_DEVICES mode):**
+1. Redis stores offset: `keepalive:device:offset = 0`
+2. Cycle 1: Process devices 0-999, set offset to 1000
+3. Cycle 2: Process devices 1000-1999, set offset to 2000
+4. ... continues cycling through all devices
+5. When reaching the end, wraps back to 0
+6. Full coverage time: `(totalDevices / MAX_DEVICES_PER_CYCLE) * cycleTime`
 
 **Handler**: `jobs/handlers/keepalive-handler.js` exports `handleKeepaliveJob(data)`
 

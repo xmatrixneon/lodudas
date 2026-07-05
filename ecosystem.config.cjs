@@ -94,9 +94,16 @@ module.exports = {
       name: 'worker:keepalive',
       script: 'workers/keepalive-worker.js',
       instances: 1,
+      // Memory protection settings for processing 9K+ devices
+      max_memory_restart: '900M',                   // Auto-restart if memory exceeds 900MB
       env: {
         BULLMQ_KEEPALIVE_ENABLED: 'true',
         BULLMQ_CONCURRENCY_DEVICE_KEEPALIVE: String(mediumConcurrencyWorkers), // 12 concurrent (was 6)
+        // Enhanced keep-alive settings
+        FCM_KEEP_ALIVE_TARGET_ALL: 'true',           // Target ALL devices, not just those with active orders
+        FCM_KEEP_ALIVE_COOLDOWN: '3',                 // 3 minute cooldown between pings
+        FCM_KEEP_ALIVE_MIN_HEARTBEAT_AGE: '45',       // Skip devices with recent heartbeats (< 45s)
+        FCM_KEEP_ALIVE_MAX_DEVICES: '1000',           // Process up to 1000 devices per cycle
       },
       // Increased memory for 62GB RAM
       node_args: '--max-old-space-size=1024',
