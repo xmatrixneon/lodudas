@@ -44,3 +44,6 @@ deployment/sites-available/
 
 # Critical collections backups (data backups shouldn't be in git)
 backups/critical-collections/
+
+# System configuration backups (nginx, SSL, etc.)
+backups/system-config/
